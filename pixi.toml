@@ -1,0 +1,15 @@
+[workspace]
+authors = ["Clément NOBER <clement.nober@etu.minesparis.psl.eu>"]
+channels = ["conda-forge"]
+name = "projet"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+numpy = ">=2.3.5,<3"
+jupyter = ">=1.1.1,<2"
+python = ">=3.14.0,<3.15"
+ipykernel = ">=7.1.0,<8"
+scipy = ">=1.16.3,<2"
