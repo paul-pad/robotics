@@ -38,6 +38,7 @@ def point_in_tetrahedron(p, A, B, C, D):
 
 
 def solve_segment(A, B):
+    # Basically performing a line search but returning the two vertices of the edges
     AB = B - A
     AO = -A
     dot_AB_AB = np.dot(AB, AB)
@@ -65,6 +66,10 @@ def solve_triangle(A, B, C):
     if np.dot(n, n) < 1e-12:
         return solve_segment(A, B)  # Fallback
 
+    # Check which edge the origin is the closest to
+    # In this case the projection will be a linear combination of the two
+    # vertices of this edge
+
     # Edge AB
     n_AB = np.cross(AB, n)
     if np.dot(n_AB, -A) > 0:
@@ -81,6 +86,9 @@ def solve_triangle(A, B, C):
     if np.dot(n_BC, -B) > 0:
         return solve_segment(B, C)
 
+    # Otherwise the origin is above or below the face
+    # So projecting it on the face
+
     # Face Region
     denom = np.dot(n, n)
     # Projection of origin onto the plane
@@ -93,11 +101,13 @@ def solve_tetrahedron(A, B, C, D):
     Project Origin onto Tetrahedron ABCD.
     Handles 'Inside' case by returning Origin.
     """
-    # 1. Check if Origin is inside
+    # Check if the origin is inside the tetrahedron
     if point_in_tetrahedron(np.zeros(3), A, B, C, D):
         return np.zeros(3), [A, B, C, D]
 
-    # 2. If outside, closest point is on the boundary (one of the faces)
+    # If outside, closest point is on the boundary (one of the faces)
+    # So projecting the origin on each face and seeing which one is
+    # the closest to the origin
     faces = [(A, B, C), (A, C, D), (A, D, B), (B, D, C)]
 
     best_pt = None
@@ -140,7 +150,7 @@ def fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, eps=0.01):
 
         g_fw = 2 * x_k.T @ (x_k - s_k)
         if g_fw < eps:
-            return x_k
+            return x_k, x_k.T @ x_k
 
         x_k = lineSearch(x_k, s_k)
 
@@ -183,7 +193,7 @@ def nesterov_fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, eps=0.01, tol=
         x_k, W_k = solve_simplex_subproblem(W_k)
 
         if np.linalg.norm(x_k) < tol:
-            return 0.0
+            return x_k, 0.0
 
         s_prev = s_k
         d_prev = d_k
