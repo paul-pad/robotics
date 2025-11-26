@@ -14,134 +14,168 @@ def lineSearch(a, b, tol=1e-8):
     return c
 
 
-def point_in_tetrahedron(p, A, B, C, D):
+def get_barycentric_coords(p, a, b):
+    v = b - a
+    w = p - a
+    d00 = np.dot(v, v)
+    d01 = np.dot(v, w)
+    if d00 < 1e-15:
+        return 0.0  # Degenerate
+    return max(0.0, min(1.0, d01 / d00))
+
+
+def project_origin_to_simplex(W):
     """
-    Checks if point p is inside tetrahedron ABCD.
-    Uses the 'Same Side' technique.
+    Robustly projects origin (0,0,0) onto the simplex W.
+    Returns: (closest_point, new_active_W)
     """
-
-    def same_side(v1, v2, v3, v4, p):
-        normal = np.cross(v2 - v1, v3 - v1)
-        dotV4 = np.dot(normal, v4 - v1)
-        dotP = np.dot(normal, p - v1)
-        return np.sign(dotV4) == np.sign(dotP)
-
-    return (
-        same_side(A, B, C, D, p)
-        and same_side(A, B, D, C, p)
-        and same_side(A, C, D, B, p)
-        and same_side(B, C, D, A, p)
-    )
-
-
-# --- Geometric Primitives (FCL Style) ---
-
-
-def solve_segment(A, B):
-    # Basically performing a line search but returning the two vertices of the edges
-    AB = B - A
-    AO = -A
-    dot_AB_AB = np.dot(AB, AB)
-
-    if dot_AB_AB < 1e-12:
-        return A, [A]
-
-    t = np.dot(AO, AB) / dot_AB_AB
-
-    if t <= 0:
-        return A, [A]
-    elif t >= 1:
-        return B, [B]
-    else:
-        return A + t * AB, [A, B]
-
-
-def solve_triangle(A, B, C):
-    # Check Edge AB
-    AB = B - A
-    AC = C - A
-    n = np.cross(AB, AC)
-
-    # Degenerate check
-    if np.dot(n, n) < 1e-12:
-        return solve_segment(A, B)  # Fallback
-
-    # Check which edge the origin is the closest to
-    # In this case the projection will be a linear combination of the two
-    # vertices of this edge
-
-    # Edge AB
-    n_AB = np.cross(AB, n)
-    if np.dot(n_AB, -A) > 0:
-        return solve_segment(A, B)
-
-    # Edge AC
-    n_AC = np.cross(n, AC)
-    if np.dot(n_AC, -A) > 0:
-        return solve_segment(A, C)
-
-    # Edge BC
-    BC = C - B
-    n_BC = np.cross(n, BC)
-    if np.dot(n_BC, -B) > 0:
-        return solve_segment(B, C)
-
-    # Otherwise the origin is above or below the face
-    # So projecting it on the face
-
-    # Face Region
-    denom = np.dot(n, n)
-    # Projection of origin onto the plane
-    P = (np.dot(A, n) / denom) * n
-    return P, [A, B, C]
-
-
-def solve_tetrahedron(A, B, C, D):
-    """
-    Project Origin onto Tetrahedron ABCD.
-    Handles 'Inside' case by returning Origin.
-    """
-    # Check if the origin is inside the tetrahedron
-    if point_in_tetrahedron(np.zeros(3), A, B, C, D):
-        return np.zeros(3), [A, B, C, D]
-
-    # If outside, closest point is on the boundary (one of the faces)
-    # So projecting the origin on each face and seeing which one is
-    # the closest to the origin
-    faces = [(A, B, C), (A, C, D), (A, D, B), (B, D, C)]
-
-    best_pt = None
-    best_W = None
-    min_dist_sq = float("inf")
-
-    for p1, p2, p3 in faces:
-        pt, W_face = solve_triangle(p1, p2, p3)
-        dist_sq = np.dot(pt, pt)
-
-        if dist_sq < min_dist_sq:
-            min_dist_sq = dist_sq
-            best_pt = pt
-            best_W = W_face
-
-    return best_pt, best_W
-
-
-def solve_simplex_subproblem(W):
+    # 1. Point Case
     if len(W) == 1:
         return W[0], W
-    if len(W) == 2:
-        return solve_segment(W[0], W[1])
-    if len(W) == 3:
-        return solve_triangle(W[0], W[1], W[2])
-    if len(W) == 4:
-        return solve_tetrahedron(W[0], W[1], W[2], W[3])
+
+    # 2. Segment Case
+    elif len(W) == 2:
+        A, B = W[0], W[1]
+        AB = B - A
+        AO = -A
+
+        denom = np.dot(AB, AB)
+        if denom < 1e-15:
+            return A, [A]  # Degenerate segment
+
+        t = np.dot(AB, AO) / denom
+        if t <= 0:
+            return A, [A]  # Voronoi region A
+        if t >= 1:
+            return B, [B]  # Voronoi region B
+        return A + t * AB, [A, B]  # Edge region
+
+    # 3. Triangle Case
+    elif len(W) == 3:
+        A, B, C = W[0], W[1], W[2]
+
+        # Normals
+        AB = B - A
+        AC = C - A
+        n = np.cross(AB, AC)
+
+        # Check if degenerate
+        if np.dot(n, n) < 1e-10:
+            # Fallback to edges if triangle is thin
+            p1, w1 = project_origin_to_simplex([A, B])
+            p2, w2 = project_origin_to_simplex([A, C])
+            p3, w3 = project_origin_to_simplex([B, C])
+            d1, d2, d3 = np.dot(p1, p1), np.dot(p2, p2), np.dot(p3, p3)
+            best_idx = np.argmin([d1, d2, d3])
+            return [p1, p2, p3][best_idx], [w1, w2, w3][best_idx]
+
+        # Voronoi region checks for Triangle faces
+        # (This is a simplified robust method: check all sub-features)
+
+        # Check closest point on edges first
+        p_ab, w_ab = project_origin_to_simplex([A, B])
+        p_ac, w_ac = project_origin_to_simplex([A, C])
+        p_bc, w_bc = project_origin_to_simplex([B, C])
+
+        # Determine if origin projects onto the face interior
+        # Compute Barycentric coordinates
+        # P = uA + vB + wC
+        v0 = B - A
+        v1 = C - A
+        v2 = -A
+        d00 = np.dot(v0, v0)
+        d01 = np.dot(v0, v1)
+        d11 = np.dot(v1, v1)
+        d20 = np.dot(v2, v0)
+        d21 = np.dot(v2, v1)
+        denom = d00 * d11 - d01 * d01
+
+        if abs(denom) > 1e-15:
+            v = (d11 * d20 - d01 * d21) / denom
+            w = (d00 * d21 - d01 * d20) / denom
+            u = 1.0 - v - w
+
+            # If strictly inside triangle
+            if u > 0 and v > 0 and w > 0:
+                return u * A + v * B + w * C, [A, B, C]
+
+        # If not inside, return closest edge point
+        d_ab, d_ac, d_bc = np.dot(p_ab, p_ab), np.dot(p_ac, p_ac), np.dot(p_bc, p_bc)
+        min_d = min(d_ab, d_ac, d_bc)
+        if d_ab == min_d:
+            return p_ab, w_ab
+        if d_ac == min_d:
+            return p_ac, w_ac
+        return p_bc, w_bc
+
+    # 4. Tetrahedron Case
+    elif len(W) == 4:
+        # Check if origin is inside
+        # We can check strict signed volumes or simply check all faces
+        A, B, C, D = W[0], W[1], W[2], W[3]
+
+        # Attempt to solve P = uA + vB + wC + zD with P=Origin
+        # System:
+        # [Ax Bx Cx Dx] [u]   [0]
+        # [Ay By Cy Dy] [v] = [0]
+        # [Az Bz Cz Dz] [w]   [0]
+        # [1  1  1  1 ] [z]   [1]
+
+        M = np.array(
+            [
+                [A[0], B[0], C[0], D[0]],
+                [A[1], B[1], C[1], D[1]],
+                [A[2], B[2], C[2], D[2]],
+                [1.0, 1.0, 1.0, 1.0],
+            ]
+        )
+
+        try:
+            # Check for degeneracy (volume ~ 0)
+            if abs(np.linalg.det(M)) < 1e-15:
+                raise np.linalg.LinAlgError
+
+            # Solve for barycentric coordinates
+            target = np.array([0, 0, 0, 1])
+            coords = np.linalg.solve(M, target)
+
+            # Check if Origin is inside (all coords positive)
+            # Use negative epsilon for robust "on-boundary" detection
+            if np.all(coords >= -1e-10):
+                return np.zeros(3), W  # INTERSECTION DETECTED
+
+        except np.linalg.LinAlgError:
+            # Degenerate tetrahedron (flat), fall through to faces
+            pass
+
+        # If not inside, the closest point MUST be on one of the faces
+        faces = [[A, B, C], [A, B, D], [A, C, D], [B, C, D]]
+
+        best_p = None
+        best_w = None
+        min_d = float("inf")
+
+        for face in faces:
+            p, w_sub = project_origin_to_simplex(face)
+            d = np.dot(p, p)
+            if d < min_d:
+                min_d = d
+                best_p = p
+                best_w = w_sub
+
+        return best_p, best_w
+
     return W[-1], [W[-1]]
 
 
-def fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, eps=0.01):
+# Algorithm 4
+def fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, opt_criterion=1e-12):
     x_k = x_0
+    W_k = []
+    eps = 10e-12  # Threshold for two numbers to be equal
 
-    for _ in range(max_iter):
+    opt_criterions = []
+    for k in range(max_iter):
         d_k = 2 * x_k
 
         s_a = A[np.argmin(A @ d_k)]
@@ -149,53 +183,63 @@ def fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, eps=0.01):
         s_k = s_a - s_b
 
         g_fw = 2 * x_k.T @ (x_k - s_k)
-        if g_fw < eps:
-            return x_k, x_k.T @ x_k
+        opt_criterions.append(g_fw)
+        if g_fw < opt_criterion:
+            return x_k, k + 1, x_k.T @ x_k, opt_criterions
 
-        x_k = lineSearch(x_k, s_k)
+        W_k.append(s_k)
+        x_k, W_k = project_origin_to_simplex(W_k)
 
-    return x_k, x_k.T @ x_k
+        if np.linalg.norm(x_k) < eps:
+            return x_k, k + 1, 0.0, opt_criterions
+
+    return x_k, k + 1, x_k.T @ x_k, opt_criterions
 
 
-def nesterov_fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, eps=0.01, tol=1e-8):
+# Algorithm 7
+def nesterov_fw(x_0, A: np.ndarray, B: np.ndarray, max_iter=1000, opt_criterion=1e-12):
     x_k = x_0.copy()
     s_prev = x_0.copy()
     d_prev = x_0.copy()
     W_k = []
 
-    d_k_to_be_replaced = False
+    eps = 10e-12  # Threshold for two numbers to be equal
+    use_nesterov = True
 
+    opt_criterions = []
     for k in range(max_iter):
         delta_k = (k + 1) / (k + 3)
-        if d_k_to_be_replaced:
-            d_k = 2 * x_k
-        else:
+
+        if use_nesterov:
             y_k = delta_k * x_k + (1 - delta_k) * s_prev
             d_k = delta_k * d_prev + (1 - delta_k) * 2 * y_k  # df(yk) = 2*yk
+        else:
+            d_k = 2 * x_k
 
         s_a = A[np.argmin(A @ d_k)]
         s_b = B[np.argmax(B @ d_k)]
         s_k = s_a - s_b
 
         g_fw = 2 * x_k.T @ (x_k - s_k)
-        if g_fw < eps:
-            if d_k_to_be_replaced or np.linalg.norm(d_k - 2 * x_k) < tol:
-                return x_k.T @ x_k
+        opt_criterions.append(g_fw)
+        if g_fw < opt_criterion:
+            if not use_nesterov or np.linalg.norm(d_k - 2 * x_k) < eps:
+                return x_k, k + 1, x_k.T @ x_k, opt_criterions
 
             d_k = 2 * x_k
 
             s_a = A[np.argmin(A @ d_k)]
             s_b = B[np.argmax(B @ d_k)]
             s_k = s_a - s_b
-            d_k_to_be_replaced = True
+            use_nesterov = False
 
         W_k.append(s_k)
-        x_k, W_k = solve_simplex_subproblem(W_k)
+        x_k, W_k = project_origin_to_simplex(W_k)
 
-        if np.linalg.norm(x_k) < tol:
-            return x_k, 0.0
+        if np.linalg.norm(x_k) < eps:
+            return x_k, k + 1, 0.0, opt_criterions
 
         s_prev = s_k
         d_prev = d_k
 
-    return x_k, x_k.T @ x_k
+    return x_k, max_iter, x_k.T @ x_k, opt_criterions
